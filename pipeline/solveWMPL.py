@@ -508,7 +508,7 @@ def delete_events_day(date):
    for event in events: 
       delete_event(None, event['event_day'], event['event_id'])
 
-def solve_day(day, cores=4):
+def solve_day(day, cores=20):
    date = day
    year, mon, dom = date.split("_")
    day_dir = "/mnt/ams2/EVENTS/" + year + "/" + mon + "/" + dom + "/" 
@@ -539,12 +539,11 @@ def solve_day(day, cores=4):
 
    for event in events_index:
       print("DY EV:", event['event_id'])
-      ev_status = check_event_status(event)
-      print("EV STATUS:", ev_status)
       if "solve_status" in event:
          print("Solve Status.", event['solve_status'] )
       else:
          print("Not Solved.")
+         print(event)
          if cores == 0:
             solve_event(event['event_id'])
          else:
@@ -560,6 +559,11 @@ def solve_day(day, cores=4):
                 running = check_running("solveWMPL.py")
                 print(running, " solving processes running.")
       ec += 1
+
+   cmd = "./DynaDB.py udc " + day + " events"
+   print(cmd)
+   os.system(cmd)
+
    exit()
 def parse_extra_obs(extra):
    print("EXTRA OBS FILE:", extra)
@@ -678,7 +682,8 @@ def solve_event(event_id, force=1, time_sync=1):
        os.makedirs(local_event_dir)
 
     if len(cloud_event_files) > 1:
-       print("This event was already processed.")
+     
+       print("This event was already processed.", cloud_event_files)
        
        #return()
 
@@ -741,9 +746,13 @@ def solve_event(event_id, force=1, time_sync=1):
              cloud_file = "/mnt/archive.allsky.tv/" + t_station + "/CAL/as6.json" 
              if cfe(local_file) == 0:
                 os.system("cp "  + cloud_file + " " + local_file)
+             print("LOADING:", local_file)
              jsi = load_json_file(local_file)
              dy_obs_data['loc'] = [jsi['site']['device_lat'], jsi['site']['device_lng'], jsi['site']['device_alt']]
+             print("LOC:", dy_obs_data['loc'], t_station)
           obs_data = convert_dy_obs(dy_obs_data, obs )
+
+    exit()
 
     extra_obs_data = []
     if len(extra_obs) > 0:
