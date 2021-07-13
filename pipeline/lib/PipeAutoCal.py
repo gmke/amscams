@@ -3,9 +3,9 @@
 Autocal functions
 
 """
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+#import matplotlib
+#matplotlib.use('Agg')
+#import matplotlib.pyplot as plt
 import time
 
 import pickle
@@ -100,8 +100,11 @@ def cal_manager(json_conf):
          default_hist[cams_id] = make_default_cal(json_conf, cams_id)
 
       for cams_id in default_hist:
-         for row in default_hist[cams_id]['range_data']:
-            rdf.append(row)
+         try:
+            for row in default_hist[cams_id]['range_data']:
+               rdf.append(row)
+         except:
+            print("no data for", cams_id)
       save_json_file("/mnt/ams2/cal/" + amsid + "_cal_range.json", rdf)
       print("SAVED: /mnt/ams2/cal/" + amsid + "_cal_range.json", rdf)
 
@@ -315,6 +318,7 @@ def make_default_cal(json_conf, cam ):
    last_best = None
    first_cal_row = None
    last_cal_row = None
+   row = None
    for row in calibs:
       cam_id, day, az, el, pos, pxs, res = row
       if last_row is None:
@@ -334,6 +338,11 @@ def make_default_cal(json_conf, cam ):
       last_row = row
       last_best = row
    last_cal_row = row
+
+   if last_cal_row is None:
+      # this must be a new cam fail/return
+      return()
+
    cam_moved.append(row)
    best_rows = sorted(best_rows, key=lambda x: x[1], reverse=True)
    worst_rows = sorted(best_rows, key=lambda x: x[1], reverse=True)
@@ -2296,8 +2305,19 @@ def refit_fov(cal_file, json_conf):
       cal_params['x_poly_fwd'] = cal_params['x_poly_fwd'].tolist()
    save_json_file(cal_file, cal_params)
 
+   short_bright_stars = []
+   if "cat_image_stars" in cp: 
+      for star in cp['cat_image_stars']:
+
+         dcname,mag,ra,dec,img_ra,img_dec,match_dist,new_x,new_y,img_az,img_el,new_cat_x,new_cat_y,six,siy,cat_dist,bp = star
+         short_bright_stars.append((dcname,dcname,ra,dec,mag))
+      cp['short_bright_stars'] = short_bright_stars
+   else:
+      cp['short_bright_stars'] = None
+
    # use short cat stars for speed
    cal_params['short_bright_stars'] = short_bright_stars
+
    cal_params = minimize_fov(cal_file, cal_params, image_file,img,json_conf)
    cal_params['close_stars']  = cal_params['cat_image_stars']
    trash_stars, cal_params['total_res_px'], cal_params['total_res_deg'] = cat_star_report(cal_params['cat_image_stars'], 4)
@@ -2400,7 +2420,9 @@ def minimize_fov(cal_file, cal_params, image_file,img,json_conf ):
    x_poly = np.float64(orig_cal['x_poly'])
    y_poly = np.float64(orig_cal['y_poly'])
 
-
+   if "short_bright_stars" not in cal_params:
+      short_bright_stars = get_catalog_stars(cal_params)
+      cal_params['short_bright_stars'] = short_bright_stars
 
    this_poly = np.zeros(shape=(4,), dtype=np.float64)
    #this_poly = [.1,.1,.1,.1]
@@ -2640,8 +2662,7 @@ def deep_calib(cam, json_conf):
          all_cal_files.append((file,res))
    #all_cal_files = deep_cal_report(cam, json_conf)
    year = datetime.now().strftime("%Y")
-
-
+   print(all_cal_files)
    #autocal_dir = "/mnt/ams2/meteor_archive/" + STATION_ID + "/CAL/AUTOCAL/" + year + "/solved/"
    #mcp_file = autocal_dir + "multi_poly-" + STATION_ID + "-" + cam + ".info"
    mcp_dir = "/mnt/ams2/cal/" 
@@ -2702,8 +2723,8 @@ def deep_calib(cam, json_conf):
          #cp = pair_stars(cp, cal_file, json_conf, gray_cal_img)
 
 
-         if len(cp['cat_image_stars']) < 10:
-            continue
+         #if len(cp['cat_image_stars']) < 10:
+         #   continue
 
          #cal_files= get_cal_files(cal_file)
          #if len(cal_files) > 5:
@@ -2726,9 +2747,9 @@ def deep_calib(cam, json_conf):
 
          #if "fov_fit" not in cp:
          print("STARS:", len(cp['user_stars']), len(cp['cat_image_stars']))
-         if len(cp['cat_image_stars']) > 10 and cp['total_res_px'] > 5:
+         #if len(cp['cat_image_stars']) > 10 and cp['total_res_px'] > 5:
 
-            print("MIN FOV:")
+         #   print("MIN FOV:")
             #os.system("./Process.py refit " + cal_file)
             #cp = minimize_fov(cal_file, cp, cal_file,cal_img,json_conf )
             #save_json_file(cal_file, cp)
@@ -2740,6 +2761,7 @@ def deep_calib(cam, json_conf):
          for data in cp['cat_image_stars']:
    
             dcname,mag,ra,dec,img_ra,img_dec,match_dist,new_x,new_y,img_az,img_el,new_cat_x,new_cat_y,six,siy,cat_dist,star_int = data
+            print("STAR:", dcname, cat_dist)
             #cp = update_center_radec(cal_file,cp,json_conf)
             all_stars.append((cal_fn, cp['center_az'], cp['center_el'], cp['ra_center'], cp['dec_center'], cp['position_angle'], cp['pixscale'], dcname,mag,ra,dec,img_ra,img_dec,match_dist,new_x,new_y,img_az,img_el,new_cat_x,new_cat_y,six,siy,cat_dist,star_int))
             if SHOW == 1:
@@ -2754,7 +2776,6 @@ def deep_calib(cam, json_conf):
    star_db['autocal_stars'] = all_stars
    star_db['all_stars'] = all_stars
    print("DONE LOADING CAL STARS.")
-
    # GET MORE STARS FROM METEOR IMAGES
    star_db['meteor_stars'] = []
    # GET METEOR STARS
@@ -2784,6 +2805,7 @@ def deep_calib(cam, json_conf):
          multi = 10 
       else:
          multi = 4
+      std_dist = 6
       if cat_dist < std_dist * multi:
          best_stars.append(star)
       else:
@@ -3226,10 +3248,15 @@ def get_cal_files(meteor_file=None, cam=None):
       cal_dirs = glob.glob("/mnt/ams2/cal/freecal/*" + cam + "*")
    for cd in cal_dirs:
       root_file = cd.split("/")[-1]
+      print(cd)
       if cfe(cd, 1) == 1:
          cp_files = glob.glob(cd + "/" + root_file + "*calparams.json")
+         print("FP", cp_files)
          if len(cp_files) == 1:
             cpf = cp_files[0]
+         else:
+            print("NO CALS:", cp_files, cam)
+            cpf = "NONE"
          if len(cp_files) > 1:
             if "stacked" in cp_files[0]:
                cpf = cp_files[0]
@@ -3988,14 +4015,17 @@ def review_cals(json_conf, cam=None):
    temp = sorted(cal_files, key=lambda x: x[0], reverse=False)
    cal_data = []
    for cam, file in temp:
-      cp_file = file.replace(".png", "-calparams.json")
-      print(cp_file)
+      if "png" in file:
+         cp_file = file.replace(".png", "-calparams.json")
+      else:
+         cp_file = file.replace(".jpg", "-calparams.json")
+      print("CP:", cp_file)
       try:
          cp = load_json_file(cp_file)
       except:
          print("Bad cal file.", cp_file)
       if "total_res_px" not in cp:
-         cp['total_res_px'] = 20
+         cp['total_res_px'] = 8
       cal_data.append((cam, file, cp['center_az'], cp['center_el'], cp['position_angle'], cp['pixscale'], cp['total_res_px']))
       save_json_file(cp_file, cp)
    med_data = find_meds(cal_data)
@@ -4122,9 +4152,9 @@ def review_cals(json_conf, cam=None):
                   print("SAVING CAL.")
                   save_json_file(cp_file, cp)
             cal_files.append((cam, file))
-            if "total_res_px" in cp and "cat_image_stars" in cp:
-               if cp['total_res_px'] < 10 and len(cp['cat_image_stars']) > 10:
-                  good_cal_files.append((cam, cp_file, cp['total_res_px']))
+            #if "total_res_px" in cp and "cat_image_stars" in cp:
+            #   if cp['total_res_px'] < 10 and len(cp['cat_image_stars']) > 10:
+            good_cal_files.append((cam, cp_file, cp['total_res_px']))
    print("CAL INDEX:", ci_dir + "cal_index-" + cam + ".json")
 
 
@@ -4209,7 +4239,10 @@ def cal_all(json_conf):
  #     last_cal['x_poly_fwd'] = cp['x_poly_fwd'].tolist()
 
       autocal(file, json_conf, 1)
-      print("RAN:", file)
+      if cfe(file) == 1:
+     
+         print("RAN:", file)
+         exit()
 
 
 def make_cal_obj(az,el,pos,px,stars,cat_image_stars,res):
@@ -4226,6 +4259,7 @@ def make_cal_obj(az,el,pos,px,stars,cat_image_stars,res):
    return(cp)
 
 def autocal(image_file, json_conf, show = 0, heal_only=0):
+   orig_image_file = image_file
    update_defaults(json_conf)
    cp = None
    best_cp = None
@@ -4252,9 +4286,16 @@ def autocal(image_file, json_conf, show = 0, heal_only=0):
    if cfe(image_file) == 0:
       return ()
    #stars = get_image_stars(image_file, None, json_conf,0)
-   img = cv2.imread(image_file)
-
-   gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+   print("IMAGE FILE:", image_file)
+   try:
+      img = cv2.imread(image_file)
+      if img.shape[0] != 1080:
+         img = cv2.resize(img, (1920, 1080))
+      gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+   except:
+      print("BAD FILE")
+      os.system("rm " + image_file)
+      return()
 
    # subtract mask from image
    if mask_img is not None:
@@ -4344,7 +4385,9 @@ def autocal(image_file, json_conf, show = 0, heal_only=0):
      
             ifn, idir = fn_dir(image_file)
             wild = image_file.replace(".png", ".*")
-            cmd = "mv " + image_file + " " + idir + "SOLVED/"
+            cmd = "mv " + image_file + " " + idir + "solved/"
+            if cfe(idir + "solved", 1) == 0:
+               os.makedirs(idir + "solved")
             print(cmd)
             os.system(cmd)
             print("We imported this file without having to plate solve.", cp['total_res_px'])
@@ -5668,8 +5711,23 @@ def default_cal_params(cal_params,json_conf):
 
 def distort_xy(sx,sy,ra,dec,RA_center, dec_center, x_poly, y_poly, x_res, y_res, pos_angle_ref,F_scale=1):
 
-   ra_star = ra
-   dec_star = dec
+   ra_star = np.float64(ra)
+   dec_star = np.float64(dec)
+   RA_center = np.float64(RA_center)
+   dec_center = np.float64(dec_center)
+   pos_angle_ref = np.float64(pos_angle_ref)
+   F_scale = np.float64(F_scale)
+   debug = 0 
+   if debug == 1:
+      print("DISTORT XY")
+      print("STR RA/DEC:", ra_star, dec_star)
+      print("CENTER RA/DEC:", RA_center, dec_center)
+      print("XP:", x_poly, type(x_poly))
+      print("YP:", y_poly, type(y_poly))
+      print("XRES:", x_res)
+      print("YRES:", y_res)
+      print("POS:", pos_angle_ref)
+      print("FSCALE:", F_scale)
 
    #F_scale = F_scale/10
    w_pix = 50*F_scale/3600
@@ -6370,7 +6428,7 @@ def minimize_poly_params_fwd(cal_params_file, cal_params,json_conf,show=0):
    cal_params['cal_params_file'] = cal_params_file
 
 
-   if res_px > 20:
+   if res_px > 40:
       print("Something is bad here. Abort!")
       return(0, cal_params)
    # do y poly 
@@ -6811,9 +6869,12 @@ def fn_dir(file):
 
 
 def minimize_poly_multi_star(merged_stars, json_conf,orig_ra_center=0,orig_dec_center=0,cam_id=None,master_file=None,mcp=None,show=0):
-   if len(merged_stars) < 30:
+   if len(merged_stars) < 10:
       print("not enough stars to multi fit!")
       return(0,0,0)
+
+
+
 
    if master_file is None:
       master_fn = "master_cal_file_" + str(cam_id) + ".json"
@@ -6828,9 +6889,17 @@ def minimize_poly_multi_star(merged_stars, json_conf,orig_ra_center=0,orig_dec_c
    img = np.zeros((1080,1920),dtype=np.uint8)
    img = cv2.cvtColor(img,cv2.COLOR_GRAY2RGB)
 
+   for star in merged_stars:
+      #(cal_file,ra_center,dec_center,position_angle,pixscale,dcname,mag,ra,dec,img_ra,img_dec,match_dist,new_x,new_y,img_az,img_el,new_cat_x,new_cat_y,six,siy, img_res,np_new_cat_x,np_new_cat_y) = star
+      print(star)
+      (cal_file , center_az, center_el, ra_center, dec_center, position_angle, pixscale, dcname,mag,ra,dec,img_ra,img_dec,match_dist,new_x,new_y,img_az,img_el,new_cat_x,new_cat_y,six,siy,cat_dist,star_int) = star
+      print(star)
+      print("XY/CATXY:", six,siy,new_cat_x,new_cat_y)
+
    err_list = []
    for star in merged_stars:
       #(cal_file,ra_center,dec_center,position_angle,pixscale,dcname,mag,ra,dec,img_ra,img_dec,match_dist,new_x,new_y,img_az,img_el,new_cat_x,new_cat_y,six,siy, img_res,np_new_cat_x,np_new_cat_y) = star
+      print(star)
       (cal_file , center_az, center_el, ra_center, dec_center, position_angle, pixscale, dcname,mag,ra,dec,img_ra,img_dec,match_dist,new_x,new_y,img_az,img_el,new_cat_x,new_cat_y,six,siy,cat_dist,star_int) = star
       img_res = cat_dist
 
@@ -6895,16 +6964,20 @@ def minimize_poly_multi_star(merged_stars, json_conf,orig_ra_center=0,orig_dec_c
    cal_params['y_poly'] = y_poly
    cal_params['x_poly_fwd'] = x_poly_fwd
    cal_params['y_poly_fwd'] = y_poly_fwd
-
+   print("CAL PARAMS:", cal_params)
    print("MERGED STARS:", len(merged_stars))
+   print("XP:", x_poly)
+   print("XP:", type(x_poly))
+   print("yP:", type(y_poly))
    res = reduce_fit_multi(x_poly,field, merged_stars, cal_params, fit_img, json_conf, cam_id,0,1)
    #res,updated_merged_stars = reduce_fit_multi(x_poly, "x_poly",merged_stars,cal_params,fit_img,json_conf,cam_id,1,show)
 
 
 
    std_dist, avg_dist = calc_starlist_res(merged_stars)
-   print("INITIAL RES: ", res, strict)
+   print("INITIAL RES FROM FIT: ", res, strict)
    print("STD/AVG DIST: ", std_dist, avg_dist)
+   show = 1
    res,updated_merged_stars = reduce_fit_multi(x_poly, "x_poly",merged_stars,cal_params,fit_img,json_conf,cam_id,1,show)
 
    # remove bad stars here (just a little)
@@ -7051,23 +7124,27 @@ def clean_pairs(merged_stars, cam_id = "", inc_limit = 5,first_run=1,show=0):
       ang_diff = abs(img_angle_to_center - np_angle_to_center)
       np_dist = calc_dist((six,siy), (np_new_cat_x, np_new_cat_y))
       col1,col2 = collinear(six,siy,np_new_cat_x,np_new_cat_y,960,540)
-      print("COL:", col1,col2)
-      if ang_diff > 1:
-         bad = 1
-      elif np_dist < 50:
+      print("SIX/CATX:", six,siy,np_new_cat_x,np_new_cat_y)
+      #print("COL:", col1,col2)
+      if True:
          color = (255)
 
-         cv2.rectangle(img, (int(new_x-2), int(new_y-2)), (int(new_x + 2), int(new_y + 2)), (255), 1)
-         line_dist = calc_dist((six,siy), (np_new_cat_x, np_new_cat_y))
-         if line_dist > 20:
-            cv2.line(img, (six,siy), (int(np_new_cat_x),int(np_new_cat_y)), (0,0,255), 1)
-         else:
-            cv2.line(img, (six,siy), (int(np_new_cat_x),int(np_new_cat_y)), (0,255,0), 1)
+         cv2.rectangle(img, (int(new_cat_x-2), int(new_cat_y-2)), (int(new_cat_x + 2), int(new_cat_y + 2)), (255,0,0), 4)
+         cv2.rectangle(img, (int(six-2), int(siy-2)), (int(six+ 2), int(siy+ 2)), (0,0,255), 2)
+         line_dist = calc_dist((six,siy), (new_cat_x, new_cat_y))
+         print("LINE DIST:", line_dist)
+
+         #if line_dist > 20:
+         #   cv2.line(img, (six,siy), (int(np_new_cat_x),int(np_new_cat_y)), (0,0,255), 1)
+         #else:
+         #   cv2.line(img, (six,siy), (int(np_new_cat_x),int(np_new_cat_y)), (0,255,0), 1)
           
-         cv2.line(img, (six,siy), (int(new_x),int(new_y)), (255,0,0), 1)
-         cv2.circle(img,(six,siy), 5, (255), 1)
-         if line_dist < 50:  
+         #cv2.line(img, (six,siy), (int(new_x),int(new_y)), (255,0,0), 1)
+         #cv2.circle(img,(six,siy), 5, (255), 1)
+         #if line_dist < 50:  
+         if True:
            np_ms = np.append(np_ms, [[ra,dec,six,siy,img_res]],axis=0 )
+           print("NP MS:", np_ms)
       else: 
          print("STAR MISSING SOME FIELDS!", star)
          continue
@@ -7077,7 +7154,7 @@ def clean_pairs(merged_stars, cam_id = "", inc_limit = 5,first_run=1,show=0):
    cv2.imwrite("/mnt/ams2/cal/lens_model_" + cam_id + ".jpg", img)
    if SHOW == 1:
       cv2.imshow(cam_id, simg)
-      cv2.waitKey(30)
+      cv2.waitKey(0)
 
 
    img = np.zeros((1080,1920),dtype=np.uint8)
@@ -7135,18 +7212,20 @@ def clean_pairs(merged_stars, cam_id = "", inc_limit = 5,first_run=1,show=0):
                if bad == 0:
                   updated_merged_stars.append((cal_file , center_az, center_el, ra_center, dec_center, position_angle, pixscale, dcname,mag,ra,dec,img_ra,img_dec,match_dist,orig_x,orig_y,img_az,img_el,new_cat_x,new_cat_y,six,siy,cat_dist,star_int))  
             else:   
-               print("No match for grid square :(")
+               print("No match for grid square :(", x1,y1,x2,y2)
    if SHOW == 1:
       simg = cv2.resize(img, (960,540))
       cv2.imshow(cam_id, simg)
    cv2.imwrite("/mnt/ams2/cal/lens_model_" + cam_id + "_grid.jpg", img)
-   cv2.waitKey(30)
+   cv2.waitKey(0)
 
    #return(merged_stars)
    print("UPDATED MERGED STARS", len(updated_merged_stars))
    return(updated_merged_stars)
 
 def reduce_fit_multi(this_poly,field, merged_stars, cal_params, fit_img, json_conf, cam_id=None,mode=0,show=0):
+   for star in merged_stars:
+      (cal_file , center_az, center_el, ra_center, dec_center, position_angle, pixscale, dcname,mag,ra,dec,img_ra,img_dec,match_dist,new_x,new_y,img_az,img_el,new_cat_x,new_cat_y,six,siy,cat_dist,star_int) = star
 
 # Portions of this function use RMS routines
 # The MIT License
@@ -7214,10 +7293,11 @@ def reduce_fit_multi(this_poly,field, merged_stars, cal_params, fit_img, json_co
    avgpixscale = 162
    for star in merged_stars:
       (cal_file , center_az, center_el, ra_center, dec_center, position_angle, pixscale, dcname,mag,ra,dec,img_ra,img_dec,match_dist,new_x,new_y,img_az,img_el,new_cat_x,new_cat_y,six,siy,cat_dist,star_int) = star
- 
+      ocat_x = new_cat_x 
+      ocat_y = new_cat_y 
       if field == 'x_poly' or field == 'y_poly':
-         new_cat_x, new_cat_y = distort_xy(0,0,ra,dec,float(ra_center), float(dec_center), x_poly, y_poly, float(1920), float(1080), float(position_angle),3600/float(pixscale))
 
+         new_cat_x, new_cat_y = distort_xy(0,0,ra,dec,float(ra_center), float(dec_center), x_poly, y_poly, float(1920), float(1080), float(position_angle),3600/float(pixscale))
          img_res = abs(calc_dist((six,siy),(new_cat_x,new_cat_y)))
          if img_res <= 1:
             color = [0,255,0]
@@ -7589,7 +7669,6 @@ def scan_for_stars(img):
          cnts = []
 
       size = 10
-      print("CNTS:", len(cnts))
       for cnt in cnts:
          x,y,w,h = cnt
          if w <= 15 and h <= 15:
@@ -7611,10 +7690,8 @@ def scan_for_stars(img):
             if star_int > 80 and pxd > 20:
             #if True:
 
-               print("STAR INT:", x,y1+y, star_int, smin, smax, savg, pxd)
                stars.append((cx, cy+y1, star_int))
             else:
-               print("BAD INT OR PXD TOO LOW.", star_int, pxd)
                bad_areas.append((x,y+y1,w,h))
          else:
             print("BAD CNT TOO BIG.")

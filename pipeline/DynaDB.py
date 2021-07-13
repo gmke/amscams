@@ -1,4 +1,6 @@
 #!/usr/bin/python3
+import redis
+import requests
 from lib.PipeManager import dist_between_two_points
 import math
 import os
@@ -11,8 +13,18 @@ from lib.PipeUtil import cfe, load_json_file, save_json_file, check_running
 import boto3
 import socket
 import subprocess
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Key, Attr
 from lib.PipeUtil import get_file_info, fn_dir
+from Classes.SyncAWS import SyncAWS
+
+#r = redis.Redis("allsky-redis.d2eqrc.0001.use1.cache.amazonaws.com", port=6379, decode_responses=True)
+API_URL = "https://kyvegys798.execute-api.us-east-1.amazonaws.com/api/allskyapi"
+
+class DecimalEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, Decimal):
+            return float(obj)
+        return json.JSONEncoder.default(self, obj)
 
 def back_loader(dynamodb, json_conf):
    mdirs = glob.glob("/mnt/ams2/meteors/*")
@@ -66,9 +78,7 @@ def save_json_conf(dynamodb, json_conf):
    table.put_item(Item=conf_mini)
 
    save_json_file("../conf/" + station_id + "_conf.json", conf_mini)
-   print("../conf/" + station_id + "_conf.json")
 
-   print(conf_mini)
    local_conf = "../conf/" + station_id + "_conf.json"
    cloud_conf = "/mnt/archive.allsky.tv/" + station_id + "/CAL/" + station_id + "_conf.json"
    cloud_dir = "/mnt/archive.allsky.tv/" + station_id + "/CAL/" 
@@ -183,19 +193,68 @@ def load_meteor_obs_day(dynamodb, station_id, day):
          meteors.append(mf)
 
    for meteor_file in meteors:
-      print("loading", meteor_file) 
       insert_meteor_obs(dynamodb, station_id, meteor_file)
 
 def insert_meteor_event(dynamodb=None, event_id=None, event_data=None):
-   
+   if cfe("admin_conf.json") == 0:
+      print("feature for admin servers only.")
+   else:
+      admin_conf = load_json_file("admin_conf.json")
+      import redis
+      r = redis.Redis(admin_conf['redis_host'], port=6379, decode_responses=True)
+      admin = 1
+
    if dynamodb is None:
       dynamodb = boto3.resource('dynamodb')
-   print("DYNA INSERT EVENT ID:", event_id)
-   print("DYNA INSERT EVENT DATA:", event_data)
    if event_id is not None and event_data is not None:
       event_data = json.loads(json.dumps(event_data), parse_float=Decimal)
       table = dynamodb.Table('x_meteor_event')
       table.put_item(Item=event_data)
+      rkey = "E:" + event_id
+
+      rval = json.dumps(event_data ,cls=DecimalEncoder)
+      r.set(rkey,rval)
+   # update all impacted obs
+   for i in range(0, len(event_data['stations'])):
+      # setup vars/values
+      station_id = event_data['stations'][i]
+      sd_video_file = event_data['files'][i]
+      if "solve_status" in event_data:
+         solve_status = event_data['solve_status']
+      else:
+         solve_status = "UNSOLVED"
+      event_id_val = event_id + ":" + solve_status
+
+      # setup redis keys for obs and get vals
+      okey = "O:" + station_id + ":" + sd_video_file
+      oikey = "OI:" + station_id + ":" + sd_video_file
+      ro_val = r.get(okey)
+      roi_val = r.get(oikey)
+      if ro_val is not None:
+         ro_val = json.loads(ro_val)
+         ro_val['event_id'] = event_id_val
+         ro_val = json.dumps(ro_val, cls=DecimalEncoder)
+         r.set(okey, ro_val)
+      if roi_val is not None:
+         roi_val = json.loads(roi_val)
+         roi_val['ei'] = event_id_val
+         roi_val = json.dumps(roi_val, cls=DecimalEncoder)
+         r.set(oikey, roi_val)
+
+      # update DYNA OBS with EVENT ID
+
+      table = dynamodb.Table('meteor_obs')
+      response = table.update_item(
+         Key = {
+            'station_id': station_id,
+            'sd_video_file': sd_video_file
+         },
+      UpdateExpression="set event_id = :event_id_val",
+      ExpressionAttributeValues={
+         ':event_id_val': event_id_val,
+      },
+      ReturnValues="UPDATED_NEW"
+   )
 
 def insert_meteor_obs(dynamodb, station_id, meteor_file):
    update_time = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
@@ -235,7 +294,6 @@ def insert_meteor_obs(dynamodb, station_id, meteor_file):
          event_start_time = ""
          duration = 99
    else:
-      print("BAD FILE:", meteor_file)
       return()
 
    if "best_meteor" in mj:
@@ -260,8 +318,10 @@ def insert_meteor_obs(dynamodb, station_id, meteor_file):
    }
    obs_data = json.loads(json.dumps(obs_data), parse_float=Decimal)
    table = dynamodb.Table('meteor_obs')
-   print("SD VID:", sd_vid)
-   table.put_item(Item=obs_data)
+   try:
+      table.update_item(Item=obs_data)
+   except:
+      table.put_item(Item=obs_data)
    mj['calib'] = calib
    mj['last_update'] = update_time
    save_json_file(meteor_file, mj)
@@ -301,7 +361,6 @@ def load_stations(dynamodb):
    for file in files:
       fn, dir = fn_dir(file)
       fn = fn.replace("_as6.json", "")
-      print(fn)   
       insert_station(dynamodb, fn)
 
 
@@ -310,7 +369,6 @@ def delete_event(dynamodb=None, event_day=None, event_id=None):
    if dynamodb is None:
       dynamodb = boto3.resource('dynamodb')
 
-   print("DELETE EVENT:", event_day, event_id)
    table = dynamodb.Table('x_meteor_event')
    response = table.delete_item(
       Key= {
@@ -318,10 +376,8 @@ def delete_event(dynamodb=None, event_day=None, event_id=None):
          "event_id": event_id
      }
    )
-   print("DEL:", response)
 
 def delete_obs(dynamodb, station_id, sd_video_file):
-   print("DELETE:", station_id, sd_video_file)
    table = dynamodb.Table('meteor_obs')
    response = table.delete_item(
       Key= {
@@ -329,7 +385,6 @@ def delete_obs(dynamodb, station_id, sd_video_file):
          "sd_video_file": sd_video_file
      }
    )
-   print("DEL:", response)
 
 
 def cache_day(dynamodb, date, json_conf):
@@ -341,29 +396,41 @@ def cache_day(dynamodb, date, json_conf):
    if json_conf['site']['ams_id'] not in stations:
       stations.append(json_conf['site']['ams_id'])
    events = search_events(dynamodb, date, stations)
-   for event in events:
-      print(event['event_id']) 
    event_file = le_dir + date + "_events.json"
    save_json_file(event_file, events)
-   print("SAVED:", event_file)
    for station in stations:
       obs = search_obs(dynamodb, station, date)
       obs_file = le_dir + station + "_" + date + ".json"
       save_json_file(obs_file, obs)
-      print("SAVED:", obs_file)
 
+def select_obs_files(dynamodb, station_id, event_day):
+   table = dynamodb.Table("meteor_obs")
+   all_items = []
+   response = table.query(
+      ProjectionExpression='station_id,sd_video_file,revision,event_id',
+      KeyConditionExpression=Key('station_id').eq(station_id) & Key('sd_video_file').begins_with(event_day),
+      )
+   for it in response['Items']:
+      all_items.append(it)
+   while 'LastEvaluatedKey' in response:
+      response = table.query(
+         ProjectionExpression='station_id,sd_video_file,revision,event_id',
+         KeyConditionExpression=Key('station_id').eq(station_id) & Key('sd_video_file').begins_with(event_day),
+         ExclusiveStartKey=response['LastEvaluatedKey'],
+         )
+      for it in response['Items']:
+         all_items.append(it)
+   return(all_items)
 
 def get_all_events(dynamodb):
    table = dynamodb.Table("x_meteor_event")
    response = table.scan()
    items = response['Items']
    while 'LastEvaluatedKey' in response:
-      print(response['LastEvaluatedKey'])
       response = table.scan(ExclusiveStartKey=response['LastEvaluatedKey'])
       items.extend(response['Items'])
    outfile = "/mnt/ams2/EVENTS/ALL_EVENTS.json"
    save_json_file(outfile, items)
-   print("saved:", outfile)
 
 
 def update_dyna_cache_for_day(dynamodb, date, stations, utype=None):
@@ -374,7 +441,6 @@ def update_dyna_cache_for_day(dynamodb, date, stations, utype=None):
    if utype == "events": 
       do_obs = 0
       do_events = 1
-   print("DATE:", date)
    year, mon, day = date.split("_")
    day_dir = "/mnt/ams2/EVENTS/" + year + "/" + mon + "/" + day + "/"
    dyn_cache = day_dir
@@ -388,8 +454,17 @@ def update_dyna_cache_for_day(dynamodb, date, stations, utype=None):
    # remove current files for the day
 
    # get station list of stations that could have shared obs
+   # don't use the API anymore, it times out. Read direct from redis
    all_stations = glob.glob("/mnt/ams2/STATIONS/CONF/*")
-   print("ALL STATIONS:", all_stations)
+   API_URL = "https://kyvegys798.execute-api.us-east-1.amazonaws.com/api/allskyapi?cmd=get_stations"
+   response = requests.get(API_URL)
+   content = response.content.decode()
+   content = content.replace("\\", "")
+   if content[0] == "\"":
+      content = content[1:]
+      content = content[0:-1]
+   jdata = json.loads(content)
+   all_stations = jdata['all_vals']
    clusters = make_station_clusters(all_stations)
    cluster_stations = []
    stations = []
@@ -399,7 +474,6 @@ def update_dyna_cache_for_day(dynamodb, date, stations, utype=None):
       if len(partners) > 1:
          cluster_stations.append(data)
    save_json_file(stations_file, clusters)
-   print("UPDATED THE DYNA CACHE!", stations_file)
    cloud_stations_file = stations_file.replace("/mnt/ams2/", "/mnt/archive.allsky.tv/")
    os.system("cp " + stations_file + " " + cloud_stations_file)
 
@@ -412,14 +486,11 @@ def update_dyna_cache_for_day(dynamodb, date, stations, utype=None):
          station_id = data[0]
          unq_stations[station_id] = 1
          stations.append(station_id)
-         print("SEARCH OBS FOR:", station, date)
          obs = search_obs(dynamodb, station_id, date, 1)
          unq_stations[station_id] = len(obs)
-         print(len(obs), obs)
          for data in obs:
             all_obs.append(data)
       save_json_file(obs_file, all_obs)
-      print("UPDATED THE DYNA CACHE!", obs_file)
       cloud_obs_file = obs_file.replace("/mnt/ams2/", "/mnt/archive.allsky.tv/")
       os.system("cp " + obs_file + " " + cloud_obs_file)
 
@@ -428,12 +499,10 @@ def update_dyna_cache_for_day(dynamodb, date, stations, utype=None):
       # get all of the events for this day 
       events = search_events(dynamodb, date, stations, 1)
 
-
       save_json_file(event_file, events)
-      print("UPDATED THE DYNA CACHE!", event_file)
       cloud_event_file = event_file.replace("/mnt/ams2/", "/mnt/archive.allsky.tv/")
       os.system("cp " + event_file + " " + cloud_event_file)
-      print(cloud_event_file)
+      print("saved" + cloud_event_file)
 
 
 
@@ -449,7 +518,6 @@ def search_events(dynamodb, date, stations, nocache=0):
       os.makedirs(dyn_cache)
    if nocache == 0:
       all_events_file = dyn_cache + date + "_ALL_EVENTS.json"   
-      print("USING ALL_EVENTS CACHE :", all_events_file)
       aed = load_json_file(all_events_file)
       return(aed)
 
@@ -476,14 +544,23 @@ def search_events(dynamodb, date, stations, nocache=0):
 
 def make_station_clusters(all_stations):
    st_lat_lon = []
-   for stc in all_stations:
-      jc = load_json_file(stc)
-      station_id = jc['site']['ams_id']
-      lat = float(jc['site']['device_lat'])
-      lon = float(jc['site']['device_lng'])
-      alt = float(jc['site']['device_alt'])
-      city = jc['site']['operator_city']
-      st_lat_lon.append((station_id, lat, lon, alt, city))
+   for station_data in all_stations:
+      #jc = load_json_file(stc)
+      station_id = station_data['station_id']
+      if "lat" in station_data:
+         lat = float(station_data['lat'])
+         lon = float(station_data['lon'])
+         if "city" in station_data:
+            city = station_data['city']
+         else:
+            city = ""
+         if "alt" in station_data:
+            alt = float(station_data['alt'])
+            st_lat_lon.append((station_id, lat, lon, alt, city))
+         else:
+            print("NO ALT FOR THIS STATION?", station_data)
+      else:
+         print(station_id, "STATION DATA INCOMPLETE!")
    cluster_data = []
    for data in st_lat_lon:
       (station_id, lat, lon, alt, city) = data
@@ -503,12 +580,9 @@ def get_all_obs(dynamodb, date, json_conf):
    all_stations = glob.glob("/mnt/ams2/STATIONS/CONF/*")
    if cfe("/mnt/ams2/STATIONS/CONF/clusters.json") == 0:
       make_station_clusters(all_stations)
-   for station in all_stations:
-      print(station)
 
 
 def search_obs(dynamodb, station_id, date, no_cache=0):
-   print("SEARCH OBS:", station_id, date)
    year, mon, day = date.split("_")
    day_dir = "/mnt/ams2/EVENTS/" + year + "/" + mon + "/" + day + "/"
    dyn_cache = day_dir
@@ -522,21 +596,18 @@ def search_obs(dynamodb, station_id, date, no_cache=0):
    final_data = []
    if cfe(all_obs_file) == 1:
       if no_cache == 0:
-         print("USING THE CACHE FILE!")
          all_obs_data = load_json_file(all_obs_file)
          for data in all_obs_data:
             if len(data) > 0:
                if data['station_id'] == station_id:
                   final_data.append(data)
          use_cache = 1
-         print("RETURN FINAL DATA FROM CACHE")
          return(final_data)
 
    #use_cache = 0
    if use_cache == 0 or no_cache == 1:
       if dynamodb is None:
          dynamodb = boto3.resource('dynamodb')
-      print("GETTING HOT METEOR OBS FOR ", station_id, date)
       table = dynamodb.Table('meteor_obs')
       response = table.query(
          KeyConditionExpression='station_id = :station_id AND begins_with(sd_video_file, :date)',
@@ -546,10 +617,8 @@ def search_obs(dynamodb, station_id, date, no_cache=0):
          } 
       )
       #save_json_file(dc_file, response['Items'])
-      print("USING HOT DYNA OBS CALL:",date, station_id )
       return(response['Items'])
    else:
-      print("USE OBS CACHE:", dc_file)
       return(load_json_file(dc_file))
 
 
@@ -560,7 +629,6 @@ def get_event(dynamodb, event_id, nocache=1):
    date = year + "_" + mon + "_" + dom
 
 
-   print("GET EVENT:", event_id)
    day_dir = "/mnt/ams2/EVENTS/" + year + "/" + mon + "/" + dom + "/"
    dyn_cache = day_dir
    if cfe(dyn_cache, 1) == 0:
@@ -579,7 +647,6 @@ def get_event(dynamodb, event_id, nocache=1):
    if cfe(dc_file) == 1:
       size, tdiff = get_file_info(dc_file)
       hours_old = tdiff / 60
-      print("HOURS OLD:", hours_old)
       if hours_old < 4:
          use_cache = 1   
    if nocache == 0:
@@ -589,13 +656,11 @@ def get_event(dynamodb, event_id, nocache=1):
       evs = load_json_file(dc_file)
       for ev in evs:
          if ev['event_id'] == event_id:
-            print("USE CACHE FOR EVENT PLEASE!", event_id)
             return(ev)
 
    if dynamodb is None:
       dynamodb = boto3.resource('dynamodb')
 
-   print("GET EVENT WITHOUT USING THE CACHE!")
 
    table = dynamodb.Table('x_meteor_event')
    event_day = event_id[0:8]
@@ -603,7 +668,6 @@ def get_event(dynamodb, event_id, nocache=1):
    m = event_day[4:6]
    d = event_day[6:8]
    event_day = y + "_" + m + "_" + d
-   print("GET EVENT:", event_day, event_id)
    response = table.query(
       KeyConditionExpression='event_day= :event_day AND event_id= :event_id',
       ExpressionAttributeValues={
@@ -611,27 +675,52 @@ def get_event(dynamodb, event_id, nocache=1):
          ':event_id': event_id,
       } 
    )
-   print("GETTING EVENT FOR:", event_day, event_id)
 
    if len(response['Items']) > 0:
       return(response['Items'][0])
    else:
-      print("Get event failed for :", event_id)
-      print(response)
       return([])
 
-def get_obs(dynamodb, station_id, sd_video_file):
+def get_obs(station_id, sd_video_file):
+   if True:
+      url = API_URL + "?cmd=get_obs&station_id=" + station_id + "&sd_video_file=" + sd_video_file
+      response = requests.get(url)
+      content = response.content.decode()
+      content = content.replace("\\", "")
+      if content[0] == "\"":
+         content = content[1:]
+         content = content[0:-1]
+      if "not found" in content:
+         data = {}
+         data['aws_status'] = False
+      else:
+         data = json.loads(content)
+         data['aws_status'] = True
+      return(data)
+
+def get_obs_old2(dynamodb, station_id, sd_video_file):
    date= sd_video_file[0:10]
    year, mon, day = date.split("_")
+   obs_data = None
    day_dir = "/mnt/ams2/EVENTS/" + year + "/" + mon + "/" + day + "/"
+   cl_day_dir = "/mnt/archive.allsky.tv/EVENTS/" + year + "/" + mon + "/" + day + "/"
    dyn_cache = day_dir
+   all_obs_file = dyn_cache + date + "_ALL_OBS.json"   
+   all_obs_cloud_file = cl_day_dir + date +"_ALL_OBS.json"   
    if cfe(dyn_cache, 1) == 0:
       os.makedirs(dyn_cache)
+   if cfe(all_obs_file) == 0:
+      if cfe(all_obs_cloud_file) == 1:
+         os.system("cp " + all_obs_cloud_file + " " + all_obs_file) 
 
    use_cache = 0
    if cfe(dyn_cache, 1) == 0:
       os.makedirs(dyn_cache)
-   all_obs_file = dyn_cache + date + "_ALL_OBS.json"   
+   if cfe(all_obs_file) == 0:
+      print("NO OBS FILE!", all_obs_file)
+      print(all_obs_cloud_file)
+      exit()
+
    aod = load_json_file(all_obs_file)
    for row in aod:
       if row['station_id'] == station_id and row['sd_video_file'] == sd_video_file:
@@ -646,7 +735,6 @@ def get_obs_old():
          for obs in dc_obs:
             
             if obs['sd_video_file'] == sd_video_file:
-               print("USE CACHE OBS:", station_id, sd_video_file)
                return(obs)
 
    if dynamodb is None:
@@ -664,6 +752,10 @@ def get_obs_old():
    else:
       return(None)
 
+
+def sync_db_day_new(dynamodb, station_id, event_day):
+   dyn_obs_index = select_obs_files(dynamodb, station_id, event_day)
+
 def sync_db_day(dynamodb, station_id, day):
    # remove the cache 
    #cmd = "rm /mnt/ams2/DYCACHE/*.json"
@@ -676,10 +768,15 @@ def sync_db_day(dynamodb, station_id, day):
    for item in items:
       db_meteors[item['sd_video_file']] = {}
       db_meteors[item['sd_video_file']]['dyna'] = 1
+      if "meteor_frame_data" not in item:
+         db_meteors[item['sd_video_file']]['meteor_frame_data'] = item['meteor_frame_data']
+      else:
+         db_meteors[item['sd_video_file']]['meteor_frame_data'] = []
       if "revision" not in item:
          db_meteors[item['sd_video_file']]['revision'] = 1
       else:
          db_meteors[item['sd_video_file']]['revision'] = item['revision']
+   #   if "meteor_frame_data" in item:
 
    files = glob.glob("/mnt/ams2/meteors/" + day + "/*.json")   
    meteors = []
@@ -710,22 +807,19 @@ def sync_db_day(dynamodb, station_id, day):
    # they have been deleted and should be removed from the remote db
    for dkey in db_meteors:
       if dkey not in local_meteors:
-         print(dkey, "DELETE OBS: no longer exists locally and should be removed from the remote db." )
          meteor_file = dkey.replace(".mp4", ".json")
          video_file = dkey
          delete_obs(dynamodb, station_id, video_file)
-      else:
-         print(dkey, "GOOD: exists locally." )
 
    # Do all of the local meteors exist in the remote db?
    # if not add them in
    for lkey in local_meteors:
       if lkey not in db_meteors:
-         print(lkey, "INSERT OBS: is not in the DB yet. We should add it." )
          meteor_file = lkey.replace(".mp4", ".json")
          insert_meteor_obs(dynamodb, station_id, meteor_file)
       else:
-         print(lkey, "GOOD: exists in the remote db." )
+         if len(db_meteors[lkey]['meteor_frame_data']) == 0:
+            print("MISSING MFD!", lkey)
 
    # Do all of the revision numbers match between the local and db meteors?
    # If the local revision is higher than the remote, we need to push the updates to the DB
@@ -734,9 +828,9 @@ def sync_db_day(dynamodb, station_id, day):
       if lkey not in db_meteors:
          print(lkey, "IGNORE: is not in the DB yet. But should be added in this run." )
       else:
-         force = 1
-         if local_meteors[lkey]['revision'] > db_meteors[lkey]['revision'] or "final_data" not in db_meteors[lkey] or force == 1:
-           
+         force = 0
+         if local_meteors[lkey]['revision'] > db_meteors[lkey]['revision'] or force == 1:
+          
             print(lkey, "UPDATE REMOTE : The local DB has a newer version of this file. " , local_meteors[lkey]['revision'] ,   db_meteors[lkey]['revision'])
             meteor_file = lkey.replace(".mp4", ".json")
             #insert_meteor_obs(dynamodb, station_id, meteor_file)
@@ -769,7 +863,31 @@ def sync_db_day(dynamodb, station_id, day):
    print(len(items), "items for", station_id)
 
 
-def update_meteor_obs(dynamodb, station_id, sd_video_file, obs_data):
+def update_meteor_obs(dynamodb, station_id, sd_video_file, obs_data=None):
+
+   if obs_data is None:
+      day = sd_video_file[0:10]
+      jsf = "/mnt/ams2/meteors/" + day + "/" + sd_video_file
+      jsf = jsf.replace(".mp4", ".json")
+      jsfr = jsf.replace(".json", "-reduced.json")
+      mj = load_json_file(jsf)
+      mjr = load_json_file(jsfr)
+      obs_data = {}
+      obs_data['revision'] = mj['revision']
+      obs_data['meteor_frame_data'] = mjr['meteor_frame_data']
+      obs_data['last_update'] = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+      if "final_vid" in mj:
+         print("ADD FINAL DATA!")
+         final_vid = mj['final_vid']
+         final_vid_fn, xxx = fn_dir(final_vid)
+         final_data_file = final_vid.replace(".mp4", ".json")
+         final_data = load_json_file(final_data_file)
+         obs_data['final_vid'] = final_vid_fn
+         obs_data['final_data'] = final_data
+      else:
+         print("No final data?")
+
+
 
    dmfd = []
    for data in obs_data['meteor_frame_data']:
@@ -788,6 +906,19 @@ def update_meteor_obs(dynamodb, station_id, sd_video_file, obs_data):
    print("REV:", obs_data['revision'])
    print("ST:", station_id)
    print("F:", sd_video_file)
+   if True:
+      if "cp" in mj:
+         cp = mj['cp']
+         if "total_res_px" not in cp:
+            cp['total_res_px'] = 9999
+         if "cat_image_stars" not in cp:
+            cp['cat_image_stars'] = []
+         if math.isnan(cp['total_res_px']):
+            cp['total_res_px'] = 9999
+         calib = [cp['ra_center'], cp['dec_center'], cp['center_az'], cp['center_el'], cp['position_angle'], cp['pixscale'], float(len(cp['cat_image_stars'])), float(cp['total_res_px'])]
+      else:
+         calib = []
+
    response = table.update_item(
       Key = {
          'station_id': station_id,
@@ -818,12 +949,6 @@ def update_event_sol(dynamodb, event_id, sol_data, obs_data, status):
    d = event_day[6:8]
    event_day = y + "_" + m + "_" + d
 
-   print("STATUS:", status)
-   print("SOL DATA:" ,sol_data)
-   for key in sol_data:
-      print("SOL:", key, sol_data[key], type(sol_data[key]))
-      #for fkey in sol_data[key]:
-      #   print("SOL:", sol_data[key][fkey])
    if "obs" in sol_data:
       del sol_data['obs']
    for key in obs_data:
@@ -853,9 +978,22 @@ def update_event_sol(dynamodb, event_id, sol_data, obs_data, status):
       },
       ReturnValues="UPDATED_NEW"
    )
-   print(response)
          #':obs_data': obs_data,
    print("UPDATED EVENT WITH SOLUTION.")
+   url = API_URL + "?recache=1&cmd=get_event&event_id=" + event_id
+   response = requests.get(url)
+   content = response.content.decode()
+   content = content.replace("\\", "")
+   #data = json.loads(content)
+   #print("RECACHE REDIS!", content)
+   #event_data = get_event(dynamodb, event_id, nocache=1)
+
+   #event_data = json.loads(event_data, parse_float=Decimal)
+  # rval = json.dumps(event_data, cls=DecimalEncoder)
+  # rkey = "E:" + event_id
+  # r.set(rkey,rval)
+  # print(rkey,rval)
+  # print("REDIS:")
    return response
 
 
@@ -882,6 +1020,15 @@ def update_event(dynamodb, event_id, simple_status, wmpl_status, sol_dir):
       ReturnValues="UPDATED_NEW"
    )
    print(response)
+   print("UPDATED EVENT WITH SOLUTION.")
+   url = API_URL + "?recache=1&cmd=get_event&event_id=" + event_id
+   print(url)
+   response = requests.get(url)
+   content = response.content.decode()
+   content = content.replace("\\", "")
+   #data = json.loads(content)
+   print(content)
+
    return response
 
 def do_dyna_day(dynamodb, day):
@@ -902,11 +1049,12 @@ def do_dyna_day(dynamodb, day):
    print(cmd)
    os.system(cmd)
 
-   #cmd = "./Process.py remaster_day " + day
+   cmd = "./Process.py remaster_day " + day
    #print(cmd)
-   #os.system(cmd)
+   os.system(cmd)
 
-   cmd = "./DynaDB.py sync_db_day " + day
+   #cmd = "./DynaDB.py sync_db_day " + day
+   cmd = "/usr/bin/python3 AWS.py sd " + day
    print(cmd)
    os.system(cmd)
 
@@ -1018,6 +1166,9 @@ if __name__ == "__main__":
    if cmd == "sync_db_day" or cmd == "sdd":
       station_id = json_conf['site']['ams_id']
       sync_db_day(dynamodb, station_id, sys.argv[2])
+   if cmd == "sync_db_day_new" or cmd == "sdd":
+      station_id = json_conf['site']['ams_id']
+      sync_db_day_new(dynamodb, station_id, sys.argv[2])
 
    if cmd == "ct":
       create_tables(dynamodb)
@@ -1031,6 +1182,10 @@ if __name__ == "__main__":
       station_id = json_conf['site']['ams_id']
       meteor_file = sys.argv[2]
       insert_meteor_obs(dynamodb, station_id, meteor_file)
+   if cmd == "update_obs":
+      station_id = json_conf['site']['ams_id']
+      meteor_file = sys.argv[2]
+      update_meteor_obs(dynamodb, station_id, meteor_file)
 
    if cmd == "search_obs":
       station_id = json_conf['site']['ams_id']
@@ -1083,6 +1238,10 @@ if __name__ == "__main__":
       get_all_obs(dynamodb, sys.argv[2], json_conf)
    if cmd == "get_all_events":
       get_all_events(dynamodb)
+   if cmd == "select_obs_files":
+      # station_id and then date please
+      select_obs_files(dynamodb, sys.argv[2], sys.argv[3])
+
    if cmd == "udc":
       if len(sys.argv) > 3:
          utype = sys.argv[3]

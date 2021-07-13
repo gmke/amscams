@@ -42,6 +42,9 @@ def gitpull(json_conf):
 
 
 def run_jobs(json_conf):
+   msg = "info:run_jobs:Run jobs ended"
+   cmd = "./log.py '" + msg + "'"
+   os.system(cmd)
    running = check_running("Process.py run_jobs")
    if running >= 3:
       print("Already running.")
@@ -110,12 +113,12 @@ def run_jobs(json_conf):
          size, tdiff = get_file_info("/home/ams/solved_last.txt")
          print("Last Update:", tdiff)
          if int(tdiff) / 60 > 5:
-            os.system("./solveWMPL.py sd " + yest + "")
+            #os.system("./solveWMPL.py sd " + yest + "")
             os.system("touch /home/ams/solved_last.txt")
 
-            os.system("./DynaDB.py load_day " + today + "")
-            #os.system("./Process.py ded " + today + "")
-            os.system("./solveWMPL.py sd " + today + "")
+            #os.system("./DynaDB.py load_day " + today + "")
+            ##os.system("./Process.py ded " + today + "")
+            #os.system("./solveWMPL.py sd " + today + "")
             os.system("touch /home/ams/solved_last.txt")
 
    # check on scan stack
@@ -151,24 +154,24 @@ def run_jobs(json_conf):
 
 
    cmds = []
-   #cmds.append(('all', "Monitor", "cd /home/ams/amscams/pipeline; ./monitor.py "))
+   cmds.append(('all', "Monitor", "cd /home/ams/amscams/pipeline; ./monitor.py "))
    cmds.append(('all', "Clean disk / Purge old files", "cd /home/ams/amscams/pythonv2; ./doDay.py cd"))
    cmds.append(('day', "Clean disk / Purge old files", "cd /home/ams/amscams/pipeline; ./Process.py rm_corrupt"))
    cmds.append(('day', "Make Meteor Index", "cd /home/ams/amscams/pipeline; ./Process.py mmi_all"))
    cmds.append(('day', "Move Day Files", "cd /home/ams/amscams/pythonv2; ./move_day_files.py"))
+   cmds.append(('all', "Update the proc index", "cd /home/ams/amscams/pythonv2; ./ASDaemon.py proc_index"))
+   cmds.append(('all', "Update the file index", "cd /home/ams/amscams/pythonv2; ./batchJobs.py fi"))
+   cmds.append(('all', "Run Master Stacks for Current Night", "cd /home/ams/amscams/pipeline; ./Process.py hs " + today))
+   cmds.append(('all', "Run Master Stacks for Last Night", "cd /home/ams/amscams/pipeline; ./Process.py hs " + yest))
+   cmds.append(('day', "Run Master Stacks for Current Night", "cd /home/ams/amscams/pythonv2; ./autoCal.py meteor_index"))
 
+   cmds.append(('day', "Run Master Stacks for Current Night", "cd /home/ams/amscams/pythonv2; ./autoCal.py cal_index"))
    cmds.append(('day', "(Update default cal)", "cd /home/ams/amscams/pipeline; ./Process.py run_cal_defaults"))
    cmds.append(('day', "(Fixup any bad cal files)", "cd /home/ams/amscams/pipeline; ./Process.py refit_all all bad "))
    cmds.append(('day', "Run Calibs (if daytime)", "cd /home/ams/amscams/pipeline; ./Process.py ca"))
    #cmds.append(('day', "Super Cal", "cd /home/ams/amscams/pipeline; ./Process.py super_cal"))
-   cmds.append(('day', "Run Master Stacks for Current Night", "cd /home/ams/amscams/pythonv2; ./autoCal.py cal_index"))
-   cmds.append(('all', "Update the proc index", "cd /home/ams/amscams/pythonv2; ./ASDaemon.py proc_index"))
-   cmds.append(('all', "Update the file index", "cd /home/ams/amscams/pythonv2; ./batchJobs.py fi"))
    #cmds.append(('all', "Run Master Stacks for Current Night", "cd /home/ams/amscams/pythonv2; ./batchJobs.py sna 1"))
-   cmds.append(('all', "Run Master Stacks for Current Night", "cd /home/ams/amscams/pipeline; ./Process.py hs " + today))
-   cmds.append(('all', "Run Master Stacks for Last Night", "cd /home/ams/amscams/pipeline; ./Process.py hs " + yest))
 
-   cmds.append(('day', "Run Master Stacks for Current Night", "cd /home/ams/amscams/pythonv2; ./autoCal.py meteor_index"))
    cmds.append(('all', "Batch Meteor Thumbs", "cd /home/ams/amscams/pythonv2; ./batchJobs.py bmt"))
    cmds.append(('all', "Run Vals Detector", "cd /home/ams/amscams/pythonv2; ./flex-detect.py bv " + today))
    cmds.append(('all', "Run Vals Detector", "cd /home/ams/amscams/pythonv2; ./flex-detect.py bv " + yest))
@@ -199,4 +202,8 @@ def run_jobs(json_conf):
          if cmd[0] == 'all':
             print(cmd[2])
             os.system(cmd[2])
+
+   msg = "info:run_jobs:Run jobs ended"
+   cmd = "./log.py '" + msg + "'"
+   os.system(cmd)
    

@@ -8,10 +8,10 @@ from sklearn.datasets import make_regression
 
 from PIL import ImageFont, ImageDraw, Image, ImageChops
 
-from DisplayFrame import DisplayFrame
-from Detector import Detector
-from Camera import Camera
-from Calibration import Calibration
+from Classes.DisplayFrame import DisplayFrame
+from Classes.Detector import Detector
+from Classes.Camera import Camera
+from Classes.Calibration import Calibration
 from lib.PipeAutoCal import gen_cal_hist,update_center_radec, get_catalog_stars, pair_stars, scan_for_stars, calc_dist, minimize_fov, AzEltoRADec , HMS2deg, distort_xy, XYtoRADec, angularSeparation
 from lib.PipeUtil import load_json_file, save_json_file, cfe
 from lib.FFFuncs import best_crop_size, ffprobe
@@ -24,11 +24,11 @@ class StationSync():
       self.today = datetime.datetime.now().strftime("%Y_%m_%d")
       self.yesterday = (datetime.datetime.now() - datetime.timedelta(days = 1)).strftime("%Y_%m_%d")
       self.json_conf = load_json_file("../conf/as6.json")
-      if cfe("../conf/sync_status.json") == 1:
-         self.sync_status = load_json_file("../conf/sync_status.json")
-      else:
-         self.sync_status = self.update_sync_status()
-         save_json_file("../conf/sync_status.json", self.sync_status)
+      self.station_id = self.json_conf['site']['ams_id']
+
+
+      self.sync_status = self.update_sync_status()
+      save_json_file("../conf/sync_status.json", self.sync_status)
 
 
       self.force = force
@@ -68,11 +68,73 @@ class StationSync():
       if self.cmd == 'sy' or self.cmd == 'sync_year':
          self.sync_year()
          return()
+      if self.cmd == 'sync_missing' :
+         self.sync_missing_files()
+         return()
+
+   def sync_missing_files(self):
+      missing_dates = {}
+      missing_reds = {}
+      missing_files = []
+      missing_url = "https://allsky.tv/API/" + self.station_id + "/MISSING_DATA/"
+      hdr = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.11 (KHTML, like Gecko) Chrome/23.0.1271.64 Safari/537.11',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.3',
+          'Accept-Encoding': 'none',
+          'Accept-Language': 'en-US,en;q=0.8',
+          'Connection': 'keep-alive'} 
+      import urllib.request
+      print(missing_url)
+      req = urllib.request.Request(missing_url,headers=hdr )
+      with urllib.request.urlopen(req) as response:
+         the_page = response.read()
+      text = the_page.decode()
+      lines = text.split("\n") 
+      for line in lines:
+         line = line.replace("\n", "")
+         if ":" not in line:
+            continue
+         station, ob_file = line.split(":")
+         date = ob_file[0:10]
+         missing_files.append(ob_file)
+         if date not in missing_dates:
+            missing_dates[date] = 1
+         else:
+            missing_dates[date] += 1
+         if date not in missing_reds:
+            missing_reds[date] = 0
+
+
+         mdir = "/mnt/ams2/meteors/" + date + "/"
+         mfile = mdir + ob_file.replace(".mp4", ".json")
+         rfile = mfile.replace(".json", "-reduced.json")
+         if cfe(rfile) == 1: 
+            print(rfile)
+         else:
+            print("MISSING RED:", rfile)
+            if date not in missing_reds:
+               missing_reds[date] = 1
+            else:
+               missing_reds[date] += 1
+
+      for date in missing_dates:
+         print(date, missing_dates[date], missing_reds[date])
+         if missing_dates[date] >= missing_reds[date]:
+            self.date = date
+            print("RESYNCING DAY:", self.date)
+            self.sync_day()
+
+      for ob_file in missing_files:
+         print(ob_file) 
+
+
+
 
    def sync_month(self):
       #f_datetime = datetime.datetime.strptime(date_str, "%Y_%m_%d_%H_%M_%S")
 
       for d in range(1,31):
+         sync_status = 0
          if d < 10:
             ds = "0" + str(d)
          else:
@@ -115,7 +177,7 @@ class StationSync():
 
 
    def sync_day(self):
-      
+      self.force = 1   
       sync_log = "/mnt/ams2/meteors/" + self.date + "/sync.txt"
       print("SYNC DAY:", self.date)
 

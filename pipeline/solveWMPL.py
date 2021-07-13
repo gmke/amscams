@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+import requests
 from lib.PipeManager import dist_between_two_points
 import time
 import json
@@ -8,7 +9,7 @@ matplotlib.use('agg')
 import glob
 from lib.PipeAutoCal import fn_dir
 from DynaDB import get_event, get_obs, search_events, update_event, update_event_sol, insert_meteor_event, delete_event
-from lib.PipeUtil import load_json_file, save_json_file, cfe, calc_dist, convert_filename_to_date_cam, check_running, get_trim_num
+from lib.PipeUtil import load_json_file, save_json_file, cfe, calc_dist, convert_filename_to_date_cam, check_running, get_trim_num, get_file_info
 import sys
 import numpy as np
 import datetime
@@ -35,10 +36,16 @@ from boto3.dynamodb.conditions import Key
 import time
 from wmpl.Utils.TrajConversions import equatorialCoordPrecession_vect, J2000_JD
 
+def get_aws_events(day):
+   day = day.replace("_", "")
+   url = "https://kyvegys798.execute-api.us-east-1.amazonaws.com/api/allskyapi?cmd=get_events&date=" + day
+   response = requests.get(url)
+   content = response.content.decode()
+   events =json.loads(content)
+   return(events)
+
 def check_make_events(obs_time, obs, events):
-   #print("EVENTS:", events)
-   #print("OBS TIME:", obs_time)
-   #print("OBS:", obs)
+   print("EVENTS:", len(events))
    if len(events) == 0:
       event = {}
       event['stations'] = []
@@ -59,19 +66,23 @@ def check_make_events(obs_time, obs, events):
    ec = 0
    for event in events:
       found = 0
-      #print(obs_time, event['start_datetime'])
       times = event['start_datetime']
       for i in range(0, len(event['stations'])):
          e_time = event['start_datetime'][i]
+         if isinstance(e_time,str) is True:
+            if "." in e_time:
+               e_time = datetime.datetime.strptime(e_time, "%Y-%m-%d %H:%M:%S.%f")
+            else:
+               e_time = datetime.datetime.strptime(e_time, "%Y-%m-%d %H:%M:%S")
+
+
          station = event['stations'][i]
          lat = event['lats'][i]
          lon = event['lons'][i]
          time_diff = (obs_time - e_time).total_seconds()
-         #print("THIS TIME DIFF:", time_diff, obs_time, e_time)
          if time_diff < 5:
             station_dist = dist_between_two_points(obs['lat'], obs['lon'], lat, lon)
             if station_dist < 500:
-               print("STATION DIST!", station_dist)
                new_event = dict(event)
                new_event['stations'].append(obs['station_id'])
                new_event['files'].append(obs['sd_video_file'])
@@ -80,11 +91,13 @@ def check_make_events(obs_time, obs, events):
                new_event['lons'].append(obs['lon'])
                found = 1
                events[ec] = new_event
+
                return(events)
-            else:
-               print("REJECT STATION DIST!", station_dist)
+            #else:
+            #   print("REJECT STATION DIST!", station_dist)
       ec += 1
-           
+
+   #inp = input("A NEW EVENT NEEDS TO BE MADE!" )
    # if we got this far it must be a new obs not related to any existing events
    # so make a new event and add it to the list
    if True:
@@ -100,7 +113,7 @@ def check_make_events(obs_time, obs, events):
       event['lats'].append(obs['lat'])
       event['lons'].append(obs['lon'])
       events.append(event)
- 
+
    return(events)
 
 def events_report(date, type="all"):
@@ -132,7 +145,7 @@ def events_report(date, type="all"):
          exit()
 
 
-
+   exit()
    rpt_s = ""
    rpt_u = ""
    rpt_f = ""
@@ -226,10 +239,9 @@ def define_events(date):
    year, mon, day = date.split("_")
    day_dir = "/mnt/ams2/EVENTS/" + year + "/" + mon + "/" + day + "/" 
 
-   print("Update DYNA Cache")
    cmd = "./DynaDB.py udc " + date
    print(cmd)
-   os.system(cmd)
+   #os.system(cmd)
 
    dyn_cache = day_dir 
    obs_file = dyn_cache + date + "_ALL_OBS.json"
@@ -238,6 +250,9 @@ def define_events(date):
    stations_file = dyn_cache + date + "_ALL_STATIONS.json"
 
    events = []
+   if cfe(events_file) == 1:
+      all_events = load_json_file(events_file)
+
    all_obs = load_json_file(obs_file)
    stations = load_json_file(stations_file)
    station_loc = {}
@@ -286,7 +301,7 @@ def define_events(date):
 
    obs_data_time = sorted(obs_data_time, key=lambda x: (x[0]), reverse=False)
    obs_by_min = {}
-   events = []
+   #events = []
 
    for obs_dt, obs_data in obs_data_time:
       station_id = obs_data['station_id']
@@ -320,7 +335,13 @@ def define_events(date):
       # convert datetimes to strings!
       new_times = []
       for ttt in event['start_datetime']:
-          time_str = ttt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+          if isinstance(ttt,str) is True:
+             time_str = ttt
+          else:
+             time_str = ttt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+
+
+          #time_str = ttt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
           new_times.append(time_str)
       event['start_datetime'] = new_times    
 
@@ -346,8 +367,8 @@ def define_events(date):
    if cfe(cdir,1) == 0:
       os.makedirs(cdir)
    cmd = "cp " + events_index_file + " " + cloud_events_index_file
-   print(cmd)
-   os.system(cmd)
+   print("DISABLED!", cmd)
+   #os.system(cmd)
    mins = []
    counts = []
    # Plot unq station obs by minute
@@ -461,10 +482,9 @@ def solve_status(day):
          if "solution" in event:
             if event["solution"] != 0:
                solved_html += event['event_id'] + " Solved.\n" 
-
          else:
             not_solved_html += event['event_id'] + " Not solved. " + str(event['stations']) + "\n"
-      #solve_event(event['event_id'])
+
    print(solved_html)
    print(failed_html)
    print(not_solved_html)
@@ -513,9 +533,10 @@ def solve_day(day, cores=20):
    year, mon, dom = date.split("_")
    day_dir = "/mnt/ams2/EVENTS/" + year + "/" + mon + "/" + dom + "/" 
    dyn_cache = day_dir 
-   cmd = "./DynaDB.py udc " + day + " events"
-   print(cmd)
-   os.system(cmd)
+   #cmd = "./DynaDB.py udc " + day + " events"
+   #print(cmd)
+   #os.system(cmd)
+
    print("Solve day", day)
    dynamodb = boto3.resource('dynamodb')
    json_conf = load_json_file("../conf/as6.json")
@@ -529,21 +550,44 @@ def solve_day(day, cores=20):
    obs_file = dyn_cache + date + "_ALL_OBS.json"
    events_file = dyn_cache + date + "_ALL_EVENTS.json"
    events_index_file = dyn_cache + date + "_ALL_EVENTS_INDEX.json"
-   events = load_json_file(events_file)
-   events_index = load_json_file(events_index_file)
+   if cfe(events_file) == 1:
+      size, tdiff = get_file_info(events_file)
+   else:
+      size = 0
+      tdiff = 0
+   if cfe(events_file) == 0 or tdiff > 120:
+      cf = events_file.replace("/mnt/ams2", "/mnt/archive.allsky.tv")
+      cmd = "cp " + cf + " " + events_file
+      os.system(cmd)
 
+   #events_index = load_json_file(events_index_file)
+   # get events from FILE ( no api) (events file is generated on cloud VM 1x per hour for current and passed day. It is faster / better cost to grab the event file from wasabi, than aws. 
+   # it has all the info needed to deal with that day's events. 
+   # we should also have the index file, with abbr version for faster client / display downloads
+   events = load_json_file(events_file)
+
+   # get events from API
+   #events = get_aws_events(day)
+   #exit()
    print("TOTAL EVENTS:", len(events))
-   print("TOTAL INDEX:", len(events_index))
+   #print("TOTAL INDEX:", len(events_index))
    total_events = len(events)
    ec = 0
 
-   for event in events_index:
+   #for event in events_index:
+   for event in events:
       print("DY EV:", event['event_id'])
+      go = 1
       if "solve_status" in event:
          print("Solve Status.", event['solve_status'] )
-      else:
-         print("Not Solved.")
-         print(event)
+         if event['solve_status'] == "SUCCESS" or event['solve_status'] == 'WMPL FAILED.':
+            go = 0
+         if event['solve_status'] == "unsolved":
+            go = 1
+
+      #go = 1
+      if go == 1:
+         print("Not Solved yet, try to solve", event['event_id'])
          if cores == 0:
             solve_event(event['event_id'])
          else:
@@ -551,7 +595,7 @@ def solve_day(day, cores=20):
              running = check_running("solveWMPL.py")
              print("RUNNING:", running)
              if running < cores:
-                cmd = "./solveWMPL.py se " + event['event_id'] + " &"
+                cmd = "./solveWMPL.py se " + event['event_id'] + " > /dev/null &"
                 os.system(cmd)
                 print(cmd)
              while running >= cores:
@@ -560,11 +604,12 @@ def solve_day(day, cores=20):
                 print(running, " solving processes running.")
       ec += 1
 
-   cmd = "./DynaDB.py udc " + day + " events"
-   print(cmd)
-   os.system(cmd)
+   #cmd = "./DynaDB.py udc " + day + " events"
+   #print(cmd)
+   #os.system(cmd)
 
    exit()
+
 def parse_extra_obs(extra):
    print("EXTRA OBS FILE:", extra)
    fp = open(extra)
@@ -650,11 +695,37 @@ def parse_extra_obs(extra):
    return(e_obs)
 
 def get_event_data(date, event_id):
+   url = "https://kyvegys798.execute-api.us-east-1.amazonaws.com/api/allskyapi?cmd=get_event&event_date=" + date + "&event_id=" + event_id
+   if True:
+      response = requests.get(url)
+      content = response.content.decode()
+      #content = content.replace("\\", "")
+      print(content)
+      print()
+      print()
+      print()
+      #if content[0] == "\"":
+      #   content = content[1:]
+      #   content = content[0:-1]
+      print(content)
+      if "not found" in content:
+         data = {}
+         data['aws_status'] = False
+      else:
+         data = json.loads(content)
+         data['aws_status'] = True
+      return(data)
+
+def get_event_data_old(date, event_id):
+
    year, mon, day = date.split("_")
    day_dir = "/mnt/ams2/EVENTS/" + year + "/" + mon + "/" + day + "/" 
    dyn_cache = day_dir 
    events_file = dyn_cache + date + "_ALL_EVENTS.json"
-   ev = load_json_file(events_file)
+   if cfe(events_file) == 1:
+      ev = load_json_file(events_file)
+   else:
+      return(None)
    for event in ev:
       print("SCANNING:", event_id, event['event_id'])
       if event_id == event['event_id']:
@@ -665,11 +736,6 @@ def solve_event(event_id, force=1, time_sync=1):
     mon = event_id[4:6]
     day = event_id[6:8]
     date = year + "_" + mon + "_" + day
-    print("EID", event_id)
-    print("Y", year)
-    print("M", mon)
-    print("D", day)
-    print("Dt", date)
     local_event_dir = "/mnt/ams2/EVENTS/" + year + "/" + mon + "/" + day + "/" + event_id + "/" 
     cloud_event_dir = "/mnt/archive.allsky.tv/EVENTS/" + year + "/" + mon + "/" + day + "/" + event_id + "/" 
     if cfe(cloud_event_dir, 1) == 0:
@@ -682,7 +748,6 @@ def solve_event(event_id, force=1, time_sync=1):
        os.makedirs(local_event_dir)
 
     if len(cloud_event_files) > 1:
-     
        print("This event was already processed.", cloud_event_files)
        
        #return()
@@ -698,7 +763,11 @@ def solve_event(event_id, force=1, time_sync=1):
 
     dynamodb = boto3.resource('dynamodb')
     #event = get_event(dynamodb, event_id, 0)
-    event =  get_event_data(date, event_id)
+    event_data =  get_event_data(date, event_id)
+    event = event_data['event_data']
+    eobs = event_data['obs_data']
+    if event == None:
+       print("There is no event data/event")
     ev_status = check_event_status(event)
 
     status = ev_status['status']
@@ -707,7 +776,7 @@ def solve_event(event_id, force=1, time_sync=1):
        #return()
     if status == -1:
        print("This event was failed to solve.", event_id)
-       return()
+       #return()
 
     # Check if there are 3rd party network obs to import
     extra_obs_dir = "/mnt/ams2/OTHEROBS/" + event_id + "/"
@@ -721,23 +790,29 @@ def solve_event(event_id, force=1, time_sync=1):
           if "solve_status" in event:
              if "FAIL" in event['solve_status']:
                 print("The event ran and failed.")
-                return()
+                #return()
              else:
                 print("The event ran and passed.")
-                return()
+                #return()
 
 
     obs = {}
-    print("EV:", event_id, event)
+    ignore_stations = []
+    #ignore_stations = ['AMS59', 'AMS61']
+    if event is None:
+       print("EVENT IS NONE!")
+       return()
+
     if len(event) == 0:
        return()
 
     bad_obs = []
     for i in range(0, len(event['stations'])):
        t_station = event['stations'][i]
+       if t_station in ignore_stations:
+          continue
        t_file = event['files'][i]
-       print(t_station, t_file)
-       dy_obs_data = get_obs(dynamodb, t_station, t_file)
+       dy_obs_data = get_obs(t_station, t_file)
        if dy_obs_data is not None:
           if t_station in nsinfo:
              dy_obs_data['loc'] = nsinfo[t_station]['loc']
@@ -746,13 +821,10 @@ def solve_event(event_id, force=1, time_sync=1):
              cloud_file = "/mnt/archive.allsky.tv/" + t_station + "/CAL/as6.json" 
              if cfe(local_file) == 0:
                 os.system("cp "  + cloud_file + " " + local_file)
-             print("LOADING:", local_file)
              jsi = load_json_file(local_file)
              dy_obs_data['loc'] = [jsi['site']['device_lat'], jsi['site']['device_lng'], jsi['site']['device_alt']]
-             print("LOC:", dy_obs_data['loc'], t_station)
           obs_data = convert_dy_obs(dy_obs_data, obs )
 
-    exit()
 
     extra_obs_data = []
     if len(extra_obs) > 0:
@@ -777,12 +849,17 @@ def solve_event(event_id, force=1, time_sync=1):
            bad_obs.append(station_id + " missing reduction.")
 
     if len(start_times) == 0:
-       print("PROB: NO DATA?", event_id)
+       status = ""
+       for stat in bad_obs:
+          status = status + stat
+       solution= {}
+       print("UPDATE DYNA SOL:", event_id) # , solution, obs, status)
+       print("BAD OBS!:", event)
+       print("BAD OBS!:", len(obs))
+       update_event_sol(None, event_id, solution, obs, status)
        return()
 
     event_start = sorted(start_times)[0]
-    print("START TIMES:", start_times)
-    print("WMPL START:", event_start)
 
     day = event_start[0:10]
     day = day.replace("-", "_")
@@ -791,21 +868,16 @@ def solve_event(event_id, force=1, time_sync=1):
     e_dir = e_dir.replace(" ", "_")
     #solve_dir += day + "/" + e_dir 
     solve_dir = local_event_dir 
-    print("SOLVE DIR:", solve_dir)
     if cfe(solve_dir, 1) == 0:
        os.makedirs(solve_dir)
 
     if cfe(solve_dir, 1) == 1:
-       print("SOLVE DIR EXISTS FROM PAST RUN DELETE CONTENTS.")
        files = glob.glob(solve_dir + "/*")
        for file in files:
           print("DEL:", file)
        #os.system("rm " + solve_dir + "/*")
        #os.system("rmdir " + solve_dir )
 
-    print("SOLVE WITH THESE OBS:")
-    for key in obs_data:
-       print(key)
     sol = simple_solvev2(obs_data)
 
     obs_data = add_extra_obs(extra_obs_data, obs_data)
@@ -813,8 +885,7 @@ def solve_event(event_id, force=1, time_sync=1):
     save_json_file(local_event_dir + "/" + event_id + "-simple.json", sol)
     save_json_file(local_event_dir + "/" + event_id + "-obs.json", obs)
     print("SAVED FILES IN:", solve_dir)
-    if len(bad_obs) > 0:
-       print("BAD OBS!", bad_obs)
+    if len(bad_obs) > 4:
        obs_data = {}
        solution = {}
        update_event_sol(None, event_id, solution, obs_data, str(bad_obs))
@@ -822,7 +893,12 @@ def solve_event(event_id, force=1, time_sync=1):
     else: 
        WMPL_solve(event_id, obs_data, time_sync)
 
-    solved_files = glob.glob(solve_dir + "/*")
+    sf = glob.glob(solve_dir + "/*")
+    solved_files = []
+    for ss in sf :
+       fn = ss.split("/")[-1]
+       solved_files.append(fn)
+
     if len(solved_files) > 10:
        simple_status = 1
        wmpl_status = 1
@@ -836,6 +912,7 @@ def solve_event(event_id, force=1, time_sync=1):
        print("FAILED TO SOLVE!")
        solution = {}
        #solution['obs'] = obs_data
+       solution['plots'] = solved_files
        if time_sync == 0:
           update_event_sol(None, event_id, solution, obs_data, "WMPL FAILED. TIME SYNC FAILED.")
        else:
@@ -952,7 +1029,6 @@ def check_event_status(event):
    month = event['event_id'][4:6] 
    day = event['event_id'][6:8] 
    date = year + "_" + month + "_" + day
-   #print(event)
    local_event_exists = 0
    cloud_event_exists = 0
    legacy_event_dir = None
@@ -1181,13 +1257,23 @@ def make_obs_html(event_id, event, solve_dir, obs):
          year = file[0:4]
          day = file[0:10]
          #link = remote_urls[station_id] + "/meteors/" + station_id + "/" + day + "/" + file + "/"
-         if len(event['obs'][station_id][file]['azs']) >= 2:
-            print(event['obs'][station_id])
-            start_az =  event['obs'][station_id][file]['azs'][0]
-            end_az =  event['obs'][station_id][file]['azs'][-1]
-            start_el =  event['obs'][station_id][file]['els'][0]
-            end_el =  event['obs'][station_id][file]['els'][-1]
-            dur =  len(event['obs'][station_id][file]['els']) / 25
+         if station_id not in event['obs']:
+             print("ERROR: STATION DATA MISSING FROM EVENT OBS!", station_id)
+             continue
+         print("EVENT:", event['obs'][station_id])
+         if file in event['obs'][station_id] : 
+            if len(event['obs'][station_id][file]['azs']) >= 2:
+               start_az =  event['obs'][station_id][file]['azs'][0]
+               end_az =  event['obs'][station_id][file]['azs'][-1]
+               start_el =  event['obs'][station_id][file]['els'][0]
+               end_el =  event['obs'][station_id][file]['els'][-1]
+               dur =  len(event['obs'][station_id][file]['els']) / 25
+            else:
+               start_az = 9999
+               end_az = 9999
+               start_el = 9999
+               end_el = 9999
+               dur = 0
          else:
             start_az = 9999
             end_az = 9999
@@ -1246,7 +1332,12 @@ def add_extra_obs(extra_obs, obs):
    return(obs)
 
 def convert_dy_obs(dy_obs_data, obs):
-   #print("DYO:", dy_obs_data)
+   print("DYO:", dy_obs_data)
+   if "station_id" not in dy_obs_data:
+      return(obs)
+   print("DY OBS DATA:", dy_obs_data.keys())
+   print("OBS DATA:", dy_obs_data.keys())
+   print("STATION:", dy_obs_data['station_id'])
    station = dy_obs_data['station_id']
    fn = dy_obs_data['sd_video_file']
    if station not in obs:
@@ -1254,7 +1345,11 @@ def convert_dy_obs(dy_obs_data, obs):
    if fn not in obs[station]:
       obs[station][fn] = {}
 
-   calib = dy_obs_data['calib'] 
+   if "calib" in dy_obs_data:
+      calib = dy_obs_data['calib'] 
+   else:
+      dy_obs_data['calib'] = {}
+      calib = {}
    obs[station][fn]['loc'] = dy_obs_data['loc']
    obs[station][fn]['calib'] = dy_obs_data['calib']
    obs[station][fn]['times'] = []
@@ -1266,23 +1361,29 @@ def convert_dy_obs(dy_obs_data, obs):
    obs[station][fn]['ras'] = []
    obs[station][fn]['decs'] = []
    obs[station][fn]['ints'] = []
-   obs[station][fn]['revision'] = float(dy_obs_data['revision'])
+   if "revision" in dy_obs_data:
+      obs[station][fn]['revision'] = float(dy_obs_data['revision'])
+   else:
+      obs[station][fn]['revision'] = 1
 
-   for row in dy_obs_data['meteor_frame_data']:
-      (dt, frn, x, y, w, h, oint, ra, dec, az, el) = row
-      obs[station][fn]['times'].append(dt)
-      obs[station][fn]['fns'].append(float(frn))
-      obs[station][fn]['xs'].append(float(x))
-      obs[station][fn]['ys'].append(float(y))
-      obs[station][fn]['azs'].append(float(az))
-      obs[station][fn]['els'].append(float(el))
-      obs[station][fn]['ras'].append(float(ra))
-      obs[station][fn]['decs'].append(float(dec))
-      obs[station][fn]['ints'].append(float(oint))
+   if "meteor_frame_data" in dy_obs_data:
+      for row in dy_obs_data['meteor_frame_data']:
+         (dt, frn, x, y, w, h, oint, ra, dec, az, el) = row
+         obs[station][fn]['times'].append(dt)
+         obs[station][fn]['fns'].append(float(frn))
+         obs[station][fn]['xs'].append(float(x))
+         obs[station][fn]['ys'].append(float(y))
+         obs[station][fn]['azs'].append(float(az))
+         obs[station][fn]['els'].append(float(el))
+         obs[station][fn]['ras'].append(float(ra))
+         obs[station][fn]['decs'].append(float(dec))
+         obs[station][fn]['ints'].append(float(oint))
+      obs[station][fn]['gc_azs'], obs[station][fn]['gc_els'] = GC_az_el(obs[station][fn]['azs'], obs[station][fn]['els'])
+   else:
+      del obs[station]
       
 
 
-   obs[station][fn]['gc_azs'], obs[station][fn]['gc_els'] = GC_az_el(obs[station][fn]['azs'], obs[station][fn]['els'])
 
    #print("OBS:", obs)
    return(obs)
@@ -1624,13 +1725,20 @@ def make_kml(kml_file, points, lines):
    lc = 0
 
    # add 3D points
+   not_used = []
    for point in points:
       lon,lat,alt,station = point
       if "3DP:" in station:
          tstation, trash = station.split("_")
          tstation = tstation.replace("3DP:", "")
          print("S/T STATION:", station, tstation)
-         color = used[tstation]
+         if tstation in used:
+            color = used[tstation]
+         else: 
+            color = "ff000000"
+            not_used.append(station)
+            continue 
+
          pnt = station_folders[tstation].newpoint(name="", coords=[(lon,lat,alt)])
          pnt.description = "" 
          pnt.style.labelstyle.color=color
@@ -1644,7 +1752,7 @@ def make_kml(kml_file, points, lines):
          pc += 1
          if pc >= len(colors):
             pc = 0
-
+   print("NOT USED STATIONS:", not_used)
    line_folder = kml.newfolder(name="Trajectory")
    for line in lines:
       (lon1,lat1,alt1,lon2,lat2,alt2,line_desc) = line
@@ -1802,7 +1910,6 @@ def WMPL_solve(event_id, obs,time_sync=1):
 
     event_start_dt = datetime.datetime.strptime(event_start, "%Y-%m-%d %H:%M:%S.%f")
     jd_ref = trajconv.datetime2JD(event_start_dt)
-    #print(event_start_dt, jd_ref)
 
 
     # Init new trajectory solving
@@ -1909,7 +2016,8 @@ def menu():
    if command == "1":
       print("Update DYNA Cache")
       cmd = "./DynaDB.py udc " + date
-      os.system(cmd)
+      print("DISABLED! RUN FROM AMAZON INSTEAD!")
+      #os.system(cmd)
       print(cmd)
    if command == "3":
       print("Define Events")
@@ -1954,7 +2062,6 @@ meteor_file = sys.argv[2]
 
 #event_json_file = "/mnt/ams2/meteor_archive/AMS1/EVENTS/2021_01_03/20210103_074325.960/20210103_074323-event.json"
 #make_event_html(event_json_file)
-#exit()
 
 
 if cmd == "solve":

@@ -9,6 +9,7 @@
 """
 import cv2
 import numpy as np
+from lib.FFFuncs import snap_video_new
 from lib.DEFAULTS import *
 import sys
 from lib.PipeUtil import check_running, load_json_file, cfe, save_json_file
@@ -59,6 +60,33 @@ def archive_snap_files():
          print("CMD:", cmd, cmd2) 
      
 
+def make_snap_files(cam_id, date_str, hd=1, mod=1):
+   if hd == 1:
+      vid_dir = "/mnt/ams2/HD/"
+   vids = glob.glob(vid_dir + date_str + "*" + cam_id + "*.mp4")
+   print(vid_dir + date_str + "*" + cam_id + "*.mp4")
+
+   date = date_str[0:10]
+   outdir = "/mnt/ams2/SNAPS/" + date + "/"
+   print(outdir)
+   if cfe(outdir,1) == 0:
+      os.makedirs(outdir)
+   c = 0
+   for vid in sorted(vids):
+      if "trim" in vid:
+         continue
+      vid_fn = vid.split("/")[-1]
+      print(c, mod)
+      if c % mod == 0:
+
+         outfile = outdir + vid_fn.replace(".mp4", ".jpg")
+         print(vid, outfile)
+         try:
+            snap_video_new(vid, outfile)
+         except:
+            print("bad vid")
+      c += 1
+
 
 def purge_files():
    files = glob.glob(SNAP_DIR + "*.png")
@@ -82,10 +110,10 @@ def purge_files():
 def images_to_video(wild, cam, outfile, type="jpg"):
    if cam is not None:
       wild_str = wild + "*" + cam + "." + type 
-      cmd = "/usr/bin/ffmpeg -framerate 25 -pattern_type glob -i '" + wild_str + "' -c:v libx264 -pix_fmt yuv420p -y " + outfile + " >/dev/null 2>&1"
+      cmd = "/usr/bin/ffmpeg -framerate 25 -pattern_type glob -i '" + wild_str + "' -vf scale=320:240 -c:v libx264 -pix_fmt yuv420p -y " + outfile + " >/dev/null 2>&1"
    else:
       wild_str = wild + "." + type
-      cmd = "/usr/bin/ffmpeg -framerate 25 -pattern_type glob -i '" + wild_str + "' -c:v libx264 -pix_fmt yuv420p -y " + outfile + " >/dev/null 2>&1"
+      cmd = "/usr/bin/ffmpeg -framerate 25 -pattern_type glob -i '" + wild_str + "' -vf scale=320:240 -c:v libx264 -pix_fmt yuv420p -y " + outfile + " >/dev/null 2>&1"
    print(cmd)
    os.system(cmd)
    print(outfile)
@@ -299,3 +327,10 @@ else:
       purge_files()
    if sys.argv[1] == 'arc_snaps':
       archive_snap_files()
+   if sys.argv[1] == 'make_snap_files':
+      hd = 1
+      mod = 15
+      cam = sys.argv[2]
+      date_str = sys.argv[3]   
+      print(cam,date_str)
+      make_snap_files(cam, date_str, hd, mod)

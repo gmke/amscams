@@ -33,6 +33,18 @@ class Events():
       self.fv = fv
       self.event_dir = "/mnt/ams2/EVENTS/"
       self.cloud_event_dir = "/mnt/archive.allsky.tv/EVENTS/"
+      self.all_events_file = self.event_dir + "ALL_EVENTS.json"
+
+   def status(self):
+      self.all_events = load_json_file("/mnt/ams2/EVENTS/ALL_EVENTS.json")
+      self.all_events = sorted(self.all_events, key=lambda x: (x['event_id']), reverse=True)
+      for event in self.all_events:
+         if event['solve_status'] == 'UNSOLVED' :
+            print(event['event_id'], event['solve_status'] , event)
+            cmd = "./solveWMPL.py se " + event['event_id'] + " " 
+            print(cmd)
+            os.system(cmd)
+
 
    def load_events(self):
       #fv['solve_status']  # 0 = not run, 1 = solved, -1 = failed -2 missing reductions
@@ -128,6 +140,46 @@ class Events():
       template = template.replace("{STATIONS_IFRAME}", stations_iframe)
 
       return(template)
+
+   def make_missing_data_list(self):
+      missing_data = []
+      self.all_events = load_json_file(self.event_dir + "ALL_EVENTS.json")
+      for data in self.all_events:
+         good = 1
+         if "solve_status" in data:
+            if data['solve_status'] != "SUCCESS" and data['solve_status'] != "WMPL_FAILED":
+               good = 0
+         else:
+            good = 0
+         if "solution" not in data:
+            good = 0
+         if good == 0:
+            print(data['event_id'], data['stations'])
+            if "obs" not in data:
+               print("MISSING OBS!")
+               for i in range(0,len(data['stations'])):
+                  missing_data.append((data['stations'][i], data['files'][i]))
+            else:
+               for station in data['obs']:
+                  for ob_file in data['obs'][station]:
+                     if "azs" in data['obs'][station][ob_file]:
+                        if len(data['obs'][station][ob_file]['azs']) == 0:
+                           print("    ******* MISSING AZS:", len(data['obs'][station][ob_file]['azs']))
+                           missing_data.append((station, ob_file))
+
+                     else:
+                        print("    ******* MISSING AZS:", ob_file, data['obs'][ob_file])
+                        missing_data.append((station, ob_file))
+      missing_data = sorted(missing_data, key=lambda x: x[0], reverse=False)
+      for data in missing_data:
+         print(data)
+
+      save_json_file("/mnt/ams2/EVENTS/ALL_MISSING_DATA.json", missing_data)
+      cmd = " cp /mnt/ams2/EVENTS/ALL_MISSING_DATA.json /mnt/archive.allsky.tv/EVENTS/ALL_MISSING_DATA.json" 
+      print(cmd)
+      os.system(cmd)
+
+                    
 
    def get_template(self, template_file):
       temp = ""
